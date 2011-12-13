@@ -1,0 +1,163 @@
+<!-- $Id: mod_xfer_mmap.html,v 1.1 2004/11/01 01:16:32 tj Exp tj $ -->
+<!-- $Source: /home/tj/proftpd/modules/doc/RCS/mod_xfer_mmap.html,v $ -->
+
+<html>
+<head>
+<title>ProFTPD module mod_xfer_mmap</title>
+</head>
+
+<body bgcolor=white>
+
+<hr>
+<center>
+<h2><b>ProFTPD module <code>mod_xfer_mmap</code></b></h2>
+</center>
+<hr><br>
+
+<p>
+<b>Caveat</b>: This is an experimental module and should be used with care.
+
+<p>
+The <code>mod_xfer_mmap</code> module was designed to improve the
+performance of downloads by using the <code>mmap()</code> function to
+map the file being downloaded into memory, and read directly from there,
+saving on system calls and buffer copies.  The <code>mmap()</code> system call
+is available on most modern Unix derivates, but not on all.  There are
+sometimes system-specific limits on the size and number of files that can be
+<code>mmap()</code>d; experimentation is probably the easiest way to find out.
+
+<p>
+The <code>mod_xfer_mmap</code> module can also create a list of statically
+configured files (via <code>TransferMMapFile</code> directives in the main
+server configuration) into memory.  This <code>mmap()</code>ing is done only at
+server start or restart.  So whenever one of the mapped files changes on the
+filesystem, you <b>must</b> restart the server (by sending it the
+<code>HUP</code> signal).  To reiterate that point: if the files are modified
+in place <i>without</i> restarting the server you may end up serving stale
+data. You should update files by unlinking the old copy and putting a new copy
+in place.  Most tools such as <code>rdist</code> and <code>mv</code> do this.
+The reason why this modules doesn't take care of changes to the files is that
+doing so would need an extra <code>stat()</code> every time, which is
+wasteful and against the intent of I/O reduction.
+
+<p>
+This module is contained in the <code>mod_xfer_mmap.c</code> file for
+ProFTPD 1.2.x, and is not compiled by default.  Installation instructions
+are discussed <a href="#Installation">here</a>.
+<p>
+The most current version of <code>mod_xfer_mmap</code> can be found at:
+<pre>
+  <a href="http://www.castaglia.org/proftpd/">http://www.castaglia.org/proftpd/</a>
+</pre>
+
+<h2>Author</h2>
+<p>
+Please contact TJ Saunders &lt;tj <i>at</i> castaglia.org&gt; with any
+questions, concerns, or suggestions regarding this module.
+
+<h2>Thanks</h2>
+<p>
+<i>2004-10-31</i>: Thanks to Michael Renner for testing out various versions
+of the module as it was developed.
+
+<h2>Directives</h2>
+<ul>
+  <li><a href="#TransferMMapEngine">TransferMMapEngine</a>
+  <li><a href="#TransferMMapFile">TransferMMapFile</a>
+</ul>
+
+<hr>
+<h3><a name="TransferMMapEngine">TransferMMapEngine</a></h3>
+<strong>Syntax:</strong> TransferMMapEngine <em>on|off</em><br>
+<strong>Default:</strong> off<br>
+<strong>Context:</strong> server config, &lt;VirtualHost&gt;, &lt;Global&gt;<br>
+<strong>Module:</strong> mod_xfer_mmap<br>
+<strong>Compatibility:</strong> 1.2.10rc1
+
+<p>
+The <code>TransferMMapEngine</code> directive enables or disables the module's
+runtime mapping of files being downloaded.  Note that if <em>off</em>,
+any files mapped via <code>TransferMMapFile</code> will be unmapped when the
+FTP session starts.  Thus the daemon process will have mapped memory that
+is not used by session processes, which is not an efficient configuration.
+
+<p>
+<hr>
+<h3><a name="TransferMMapFile">TransferMMapFile</a></h3>
+<strong>Syntax:</strong> TransferMMapFile <em>path1 [path2 path3 ...]</em><br>
+<strong>Default:</strong> None<br>
+<strong>Context:</strong> server config, &lt;VirtualHost&gt;, &lt;Global&gt;<br>
+<strong>Module:</strong> mod_xfer_mmap<br>
+<strong>Compatibility:</strong> 1.2.10rc1
+
+<p>
+The <code>TransferMMapFile</code> directive is used to &quot;preload&quot;
+files into memory by mmapping them at startup time, rather than just before
+the file is downloaded.  They will be automatically unmapped when the server
+shuts down.  When these mapped files have changed, you should restart the
+server to re-map them.
+
+<p>
+<hr>
+<h2><a name="Installation">Installation</a></h2>
+To install <code>mod_xfer_mmap</code>, copy the <code>mod_xfer_mmap.c</code>
+file into:
+<pre>
+  <i>proftpd-dir</i>/contrib/
+</pre>
+after unpacking the latest proftpd-1.2 source code.  Then follow the usual
+steps for using third-party modules in proftpd:
+<pre>
+  ./configure --with-modules=mod_xfer_mmap
+  make
+  make install
+</pre>
+
+<p>
+<hr>
+<h2><a name="Usage">Usage</a></h2>
+There are a couple of things to keep in mind when using
+<code>mod_xfer_mmap</code>.  It only affects downloads from the server, not
+uploads to the server.  If your <code>proftpd</code> uses
+<code>sendfile()</code>, that function will take precedence over
+<code>mod_xfer_mmap</code>.  Files that are handled by
+<code>mod_xfer_mmap</code> can still be throttled by the
+<code>TransferRate</code> and modules like <code>mod_shaper</code>.
+
+<p>
+<code>mod_xfer_mmap</code> will not handle a file if the file is larger
+than <code>mmap()</code> can handle (which is around 2GB, depending on
+your platform's implementation), or if the file is to transfered as an
+ASCII file.
+
+<p>
+Example configuration:
+<pre>
+  &lt;IfModule mod_xfer_mmap.c&gt;
+    TransferMMapEngine on
+  &lt;/IfModule&gt;
+</pre>
+
+<p>
+Note that you may see the size of session processes changing strangely;
+this will happen as <code>mod_xfer_mmap</code> maps and unmaps files
+from the process' memory space.
+
+<p>
+<hr><br>
+
+Author: <i>$Author: tj $</i><br>
+Last Updated: <i>$Date: 2004/11/01 01:16:32 $</i><br>
+
+<br><hr>
+
+<font size=2><b><i>
+&copy; Copyright 2004 TJ Saunders<br>
+ All Rights Reserved<br>
+</i></b></font>
+
+<hr><br>
+
+</body>
+</html>
+
