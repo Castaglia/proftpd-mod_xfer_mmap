@@ -66,6 +66,8 @@ static int xfer_mmap_premapped;
 /* For premapped files. */
 static array_header *xfer_mmap_files = NULL;
 
+static const char *trace_channel = "xfer_mmap";
+
 /* Support routines
  */
 
@@ -73,13 +75,18 @@ static void xfer_mmap_unmap_files(void) {
   register unsigned int i;
   xfer_mmap_file_t *files;
 
-  if (!xfer_mmap_files)
+  if (xfer_mmap_files == NULL) {
     return;
+  }
 
   files = (xfer_mmap_file_t *) xfer_mmap_files->elts;
 
   for (i = 0; i < xfer_mmap_files->nelts; i++) {
-    munmap(files[i].data, files[i].st.st_size);
+    if (munmap(files[i].data, files[i].st.st_size) < 0) {
+      pr_trace_msg(trace_channel, 7, "error unmapping '%s': %s", files[i].path,
+        strerror(errno));
+    }
+
     pr_remove_fs(files[i].path);
   }
 }
@@ -94,42 +101,50 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
 #endif
 
   fd = open(path, flags, PR_OPEN_MODE);
-
   if (fd < 0) {
-    if (fdp)
+    if (fdp != NULL) {
       *fdp = fd;
+    }
 
     return fd;
   }
 
   if (fstat(fd, &st) < 0) {
-    if (fdp)
+    if (fdp != NULL) {
       *fdp = fd;
+    }
 
     return -1;
   }
 
   data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
-
   if (data == MAP_FAILED) {
-    if (fdp)
-      *fdp = fd;
+    int xerrno = errno;
 
+    pr_trace_msg(trace_channel, 3, "error mmapping '%s' (size %lu): %s",
+      path, (unsigned long) st.st_size, strerror(xerrno));
+
+    if (fdp != NULL) {
+      *fdp = fd;
+    }
+
+    errno = xerrno;
     return -1;
   }
 
   /* Note that once we've mapped the file's contents into memory, we do not
    * need to keep the file descriptor open any more.
    */
-  close(fd);
+  (void) close(fd);
 
   curr_mmap_file.path = path;
   curr_mmap_file.data = data;
   curr_mmap_file.datalen = 0;
   memcpy(&curr_mmap_file.st, &st, sizeof(struct stat));
  
-  if (fdp)
+  if (fdp != NULL) {
     *fdp = XFER_MMAP_FD;
+  }
  
   return 0;
 }
@@ -138,8 +153,10 @@ static int xfer_mmap_set_file(const char *path) {
   register unsigned int i;
   xfer_mmap_file_t *files;
 
-  if (!xfer_mmap_files)
+  if (xfer_mmap_files == NULL) {
+    errno = EPERM;
     return -1;
+  }
 
   files = (xfer_mmap_file_t *) xfer_mmap_files->elts;
 
@@ -161,8 +178,9 @@ static int xfer_mmap_set_file(const char *path) {
  */
 
 static int xfer_mmap_close_cb(pr_fh_t *fh, int fd) {
-  if (!xfer_mmap_premapped)
+  if (xfer_mmap_premapped == FALSE) {
     munmap(curr_mmap_file.data, curr_mmap_file.st.st_size);
+  }
 
   /* Reset the offset. */
   curr_mmap_file.datalen = curr_mmap_file.st.st_size;
@@ -191,13 +209,13 @@ static int xfer_mmap_open_cb(pr_fh_t *fh, const char *path, int flags) {
   int fd;
 
   /* Check to see if the requested file has already been mapped. */
-  if (xfer_mmap_files) {
-    const char *full_path = dir_abs_path(fh->fh_pool, path, TRUE);
+  if (xfer_mmap_files != NULL) {
+    const char *full_path;
 
+    full_path = dir_abs_path(fh->fh_pool, path, TRUE);
     if (xfer_mmap_set_file(full_path) == 0) {
       xfer_mmap_premapped = TRUE;
-      pr_log_debug(DEBUG7, MOD_XFER_MMAP_VERSION
-        ": using existing mapping for %s", path);
+      pr_trace_msg(trace_channel, 9, "using existing mapping for %s", path);
       return XFER_MMAP_FD;
     }
   }
@@ -286,8 +304,9 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
         strerror(errno), NULL));
     }
 
-    if (!xfer_mmap_files)
+    if (xfer_mmap_files == NULL) {
       xfer_mmap_files = make_array(xfer_mmap_pool, 1, sizeof(xfer_mmap_file_t));
+    }
 
     map = push_array(xfer_mmap_files);
     map->path = pstrdup(xfer_mmap_pool, path);
@@ -295,7 +314,7 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
     map->datalen = curr_mmap_file.datalen;
     memcpy(&map->st, &curr_mmap_file.st, sizeof(struct stat));
 
-    if (!xfer_mmap_fs) {
+    if (xfer_mmap_fs == NULL) {
       xfer_mmap_fs = pr_register_fs(xfer_mmap_pool, "mmap", path);
       if (xfer_mmap_fs == NULL) {
         CONF_ERROR(cmd, pstrcat(cmd->tmp_pool, ": unable register 'mmap' fs: ",
@@ -336,8 +355,8 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
    */
  
   if (session.sf_flags & (SF_ASCII|SF_ASCII_OVERRIDE)) {
-    pr_log_debug(DEBUG7, MOD_XFER_MMAP_VERSION ": declining to mmap '%s': "
-      "ASCII transfer requested", cmd->arg);
+    pr_trace_msg(trace_channel, 9,
+      "declining to mmap '%s': ASCII transfer requested", cmd->arg);
     return PR_DECLINED(cmd);
   }
  
@@ -348,8 +367,8 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
   }
 
   if (st.st_size == 0) {
-    pr_log_debug(DEBUG5, MOD_XFER_MMAP_VERSION ": declining to mmap '%s': "
-      "empty file", cmd->arg);
+    pr_trace_msg(trace_channel, 9, "declining to mmap '%s': Empty file",
+      cmd->arg);
     return PR_DECLINED(cmd);
   }
 
@@ -408,19 +427,40 @@ MODRET xfer_mmap_post_retr(cmd_rec *cmd) {
   return PR_DECLINED(cmd);
 }
 
-/* Event handlers
+/* Event Listeners
  */
+
+#if defined(PR_SHARED_MODULE)
+static void xfer_mmap_mod_unload_ev(const void *event_data, void *user_data) {
+  if (strcmp("mod_xfer_mmap.c", (const char *) event_data) == 0) {
+    pr_event_unregister(&xfer_mmap_module, NULL, NULL);
+
+    xfer_mmap_unmap_files();
+
+    if (xfer_mmap_fs != NULL) {
+      destroy_pool(xfer_mmap_fs->fs_pool);
+      xfer_mmap_fs = NULL;
+    }
+
+    if (xfer_mmap_pool != NULL) {
+      destroy_pool(xfer_mmap_pool);
+      xfer_mmap_pool = NULL;
+    }
+  }
+}
+#endif /* PR_SHARED_MODULE */
 
 static void xfer_mmap_restart_ev(const void *event_data, void *user_data) {
   xfer_mmap_unmap_files();
 
-  if (xfer_mmap_fs) {
+  if (xfer_mmap_fs != NULL) {
     destroy_pool(xfer_mmap_fs->fs_pool);
     xfer_mmap_fs = NULL;
   }
 
-  if (xfer_mmap_pool)
+  if (xfer_mmap_pool != NULL) {
     destroy_pool(xfer_mmap_pool);
+  }
 
   xfer_mmap_pool = make_sub_pool(permanent_pool);
   pr_pool_tag(xfer_mmap_pool, MOD_XFER_MMAP_VERSION);
@@ -430,13 +470,17 @@ static void xfer_mmap_restart_ev(const void *event_data, void *user_data) {
  */
 
 static int xfer_mmap_init(void) {
-
-  if (xfer_mmap_pool)
+  if (xfer_mmap_pool == NULL) {
     destroy_pool(xfer_mmap_pool);
+  }
 
   xfer_mmap_pool = make_sub_pool(permanent_pool);
   pr_pool_tag(xfer_mmap_pool, MOD_XFER_MMAP_VERSION);
 
+#if defined(PR_SHARED_MODULE)
+  pr_event_register(&xfer_mmap_module, "core.module-unload",
+    xfer_mmap_mod_unload_ev, NULL);
+#endif /* PR_SHARED_MODULE */
   pr_event_register(&xfer_mmap_module, "core.restart", xfer_mmap_restart_ev,
     NULL);
 
