@@ -117,7 +117,11 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
     return -1;
   }
 
-  data = mmap(NULL, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  /* Note: We are not making modifications to the file contents, so using
+   * MAP_SHARED here is more of a way to hint to the kernel that it is OK
+   * to simply share these pages with other requested processes.
+   */
+  data = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
   if (data == MAP_FAILED) {
     int xerrno = errno;
 
