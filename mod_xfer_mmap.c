@@ -136,6 +136,14 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
     return -1;
   }
 
+#if defined(MADV_SEQUENTIAL)
+  /* Let the kernel know it can do more aggressive readaheads. */
+  if (madvise(data, 0, MADV_SEQUENTIAL) < 0) {
+    pr_trace_msg(trace_channel, 8, "madvise(2) SEQUENTIAL error: %s",
+      strerror(errno));
+  }
+#endif /* MADV_SEQUENTIAL */
+
   /* Note that once we've mapped the file's contents into memory, we do not
    * need to keep the file descriptor open any more.
    */
