@@ -1,5 +1,0 @@
-The mod_xfer_mmap module for ProFTPD uses mmap(2) to map files to be
-downloaded into memory, rather than using read(2).  This hopefully saves
-on kernel IO and memory usage.
-
-For further module documentation, see mod_xfer_mmap.html.
