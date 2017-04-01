@@ -1,0 +1,32 @@
+language: c
+
+compiler:
+  - gcc
+  - clang
+
+install:
+  - sudo apt-get update -qq
+  # for unit tests
+  - sudo apt-get install -y check
+  # for static code analysis
+  - sudo apt-get install -y cppcheck rats
+  # for test code coverage
+  - sudo apt-get install -y lcov
+  - gem install coveralls-lcov
+
+before_script:
+  - cd ${TRAVIS_BUILD_DIR}
+  - lcov --directory . --zerocounters
+
+script:
+  # - find . -type f -name "*.c" -print | grep -v t\/ | xargs cppcheck 2>&1
+  # - find . -type f -name "*.c" -print | grep -v t\/ | xargs rats --language=c
+  - git clone --depth 50 https://github.com/proftpd/proftpd.git
+  - cp mod_xfer_mmap.c proftpd/contrib/
+  - cd proftpd
+  - ./configure --enable-devel=coverage --enable-dso --enable-tests --with-shared=mod_xfer_mmap
+  - make
+  - make clean
+  - ./configure --enable-devel=coverage --enable-tests --with-modules=mod_xfer_mmap
+  - make
+  # Run `tidy -e -q mod_xfer_mmap.html` for doc validation

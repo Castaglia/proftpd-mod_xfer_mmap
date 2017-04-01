@@ -1,7 +1,6 @@
 /*
  * ProFTPD: mod_xfer_mmap -- a module for using mmap(2) for downloaded files
- *
- * Copyright (c) 2003 TJ Saunders
+ * Copyright (c) 2003-2017 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -22,22 +21,20 @@
  * resulting executable, without including the source code for OpenSSL in the
  * source distribution.
  *
- * This is mod_xfer_mmap contrib software for proftpd 1.2 and above.
+ * This is mod_xfer_mmap contrib software for proftpd 1.3.x and above.
  * For more information contact TJ Saunders <tj@castaglia.org>.
- *
- * $Id: mod_xfer_mmap.c,v 1.1 2004/10/30 02:32:47 tj Exp tj $
  *
  * -----DO NOT CHANGE THE LINES BELOW-----
  */
 
 #include "conf.h"
 
-/* NOTE: will require 1.2.10rc1 or later */
-#if PROFTPD_VERSION_NUMBER < 0x0001021001
-# error "ProFTPD 1.2.10rc1 or later required"
+/* NOTE: will require 1.3.5c1 or later */
+#if PROFTPD_VERSION_NUMBER < 0x0001030501
+# error "ProFTPD 1.3.5rc1 or later required"
 #endif
 
-#define MOD_XFER_MMAP_VERSION	"mod_xfer_mmap/0.2"
+#define MOD_XFER_MMAP_VERSION	"mod_xfer_mmap/0.3"
 
 #ifdef HAVE_SYS_MMAN_H
 # include <sys/mman.h>
@@ -48,7 +45,7 @@
 
 module xfer_mmap_module;
 
-static unsigned char xfer_mmap_engine = FALSE;
+static int xfer_mmap_engine = FALSE;
 static pr_fs_t *xfer_mmap_fs = NULL;
 static pool *xfer_mmap_pool = NULL;
 
@@ -230,13 +227,14 @@ static int xfer_mmap_read_cb(pr_fh_t *fh, int fd, char *buf, size_t bufsz) {
   size_t len = bufsz;
 
   /* Ensure we don't read past the end of the mapped memory. */
-  if (curr_mmap_file.datalen + bufsz >= curr_mmap_file.st.st_size)
+  if ((off_t) (curr_mmap_file.datalen + bufsz) >= curr_mmap_file.st.st_size) {
     len = curr_mmap_file.st.st_size - curr_mmap_file.datalen;
+  }
 
   memcpy(buf, (char *) curr_mmap_file.data + curr_mmap_file.datalen, len); 
   curr_mmap_file.datalen += len;
 
-  return len;
+  return (int) len;
 }
 
 /* Configuration handlers
@@ -244,33 +242,32 @@ static int xfer_mmap_read_cb(pr_fh_t *fh, int fd, char *buf, size_t bufsz) {
 
 /* usage: TransferMMapEngine on|off */
 MODRET set_xfermmapengine(cmd_rec *cmd) {
-  int bool = -1;
+  int engine = -1;
   config_rec *c = NULL;
-
-  /* XXX this could be extended to include the Anonymous context in the
-   * future.
-   */
 
   CHECK_ARGS(cmd, 1); 
   CHECK_CONF(cmd, CONF_ROOT|CONF_VIRTUAL|CONF_GLOBAL);
 
-  bool = get_boolean(cmd, 1);
-  if (bool == -1)
-    CONF_ERROR(cmd, "requires a Boolean parameter");
+  engine = get_boolean(cmd, 1);
+  if (engine == -1) {
+    CONF_ERROR(cmd, "expected Boolean parameter");
+  }
 
   c = add_config_param(cmd->argv[0], 1, NULL);
-  c->argv[0] = palloc(c->pool, sizeof(unsigned char));
-  *((unsigned char *) c->argv[0]) = (unsigned char) bool;
+  c->argv[0] = palloc(c->pool, sizeof(int));
+  *((int *) c->argv[0]) = engine;
 
-  return HANDLED(cmd);
+  return PR_HANDLED(cmd);
 }
 
 /* usage: TransferMMapFile path [path ...] */
 MODRET set_xfermmapfile(cmd_rec *cmd) {
   register unsigned int i;
 
-  if (cmd->argc-1 == 0)
+  if (cmd->argc-1 == 0) {
     CONF_ERROR(cmd, "missing parameters");
+  }
+
   CHECK_CONF(cmd, CONF_ROOT|CONF_VIRTUAL|CONF_GLOBAL);
 
   for (i = 1; i < cmd->argc; i++) {
@@ -300,10 +297,10 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
 
     if (!xfer_mmap_fs) {
       xfer_mmap_fs = pr_register_fs(xfer_mmap_pool, "mmap", path);
-
-      if (!xfer_mmap_fs)
+      if (xfer_mmap_fs == NULL) {
         CONF_ERROR(cmd, pstrcat(cmd->tmp_pool, ": unable register 'mmap' fs: ",
           strerror(errno), NULL));
+      }
 
       /* Add the custom FSIO callbacks. */
       xfer_mmap_fs->close = xfer_mmap_close_cb;
@@ -320,7 +317,7 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
     }
   }
 
-  return HANDLED(cmd);
+  return PR_HANDLED(cmd);
 }
 
 /* Command handlers
@@ -330,8 +327,9 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
   struct stat st;
   const char *path;
 
-  if (!xfer_mmap_engine)
-    return DECLINED(cmd);
+  if (xfer_mmap_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
 
   /* We do not use mmap() if we are transmitting an ASCII file, or
    * if the file is zero-length.
@@ -340,19 +338,19 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
   if (session.sf_flags & (SF_ASCII|SF_ASCII_OVERRIDE)) {
     pr_log_debug(DEBUG7, MOD_XFER_MMAP_VERSION ": declining to mmap '%s': "
       "ASCII transfer requested", cmd->arg);
-    return DECLINED(cmd);
+    return PR_DECLINED(cmd);
   }
  
   if (lstat(cmd->arg, &st) < 0) {
     pr_log_debug(DEBUG3, MOD_XFER_MMAP_VERSION ": error checking '%s': %s",
       cmd->arg, strerror(errno));
-    return DECLINED(cmd);
+    return PR_DECLINED(cmd);
   }
 
   if (st.st_size == 0) {
     pr_log_debug(DEBUG5, MOD_XFER_MMAP_VERSION ": declining to mmap '%s': "
       "empty file", cmd->arg);
-    return DECLINED(cmd);
+    return PR_DECLINED(cmd);
   }
 
   if (!S_ISLNK(st.st_mode)) {
@@ -368,7 +366,7 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
     if (pr_fsio_readlink(cmd->arg, linkpath, sizeof(linkpath)-1) < 0) {
       pr_log_debug(DEBUG3, MOD_XFER_MMAP_VERSION ": declining to mmap '%s': "
         "error reading symlink: %s", cmd->arg, strerror(errno));
-      return DECLINED(cmd);
+      return PR_DECLINED(cmd);
     }
 
     path = session.chroot_path ?
@@ -376,13 +374,12 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
       dir_abs_path(cmd->tmp_pool, linkpath, TRUE);
   }
 
-  if (!xfer_mmap_fs) {
+  if (xfer_mmap_fs == NULL) {
     xfer_mmap_fs = pr_register_fs(cmd->server->pool, "mmap", path);
-
-    if (!xfer_mmap_fs) {
+    if (xfer_mmap_fs == NULL) {
       pr_log_debug(DEBUG6, MOD_XFER_MMAP_VERSION ": unable register 'mmap' fs: "
         "%s", strerror(errno));
-      return DECLINED(cmd);
+      return PR_DECLINED(cmd);
     }
 
     /* Add the custom FSIO callbacks. */
@@ -399,16 +396,16 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
     pr_insert_fs(xfer_mmap_fs, path);
   }
 
-  return DECLINED(cmd);
+  return PR_DECLINED(cmd);
 }
 
 MODRET xfer_mmap_post_retr(cmd_rec *cmd) {
-
-  if (!xfer_mmap_engine)
-    return DECLINED(cmd);
+  if (xfer_mmap_engine == FALSE) {
+    return PR_DECLINED(cmd);
+  }
 
   memset(&curr_mmap_file, '\0', sizeof(curr_mmap_file));
-  return DECLINED(cmd);
+  return PR_DECLINED(cmd);
 }
 
 /* Event handlers
@@ -447,17 +444,17 @@ static int xfer_mmap_init(void) {
 }
 
 static int xfer_mmap_sess_init(void) {
-  unsigned char *engine = get_param_ptr(main_server->conf,
-    "TransferMMapEngine", FALSE);
+  config_rec *c;
 
-  if (engine && *engine == TRUE)
-    xfer_mmap_engine = TRUE;
+  c = find_config(main_server->conf, CONF_PARAM, "TransferMMapEngine", FALSE);
+  if (c != NULL) {
+    xfer_mmap_engine = *((int *) c->argv[0]);
+  }
 
-  else {
-
+  if (xfer_mmap_engine == FALSE) {
     xfer_mmap_unmap_files(); 
 
-    if (xfer_mmap_fs) {
+    if (xfer_mmap_fs != NULL) {
       destroy_pool(xfer_mmap_fs->fs_pool);
       xfer_mmap_fs = NULL;
     }
@@ -507,5 +504,8 @@ module xfer_mmap_module = {
   xfer_mmap_init,
 
   /* Session initialization function */
-  xfer_mmap_sess_init
+  xfer_mmap_sess_init,
+
+  /* Module version */
+  MOD_XFER_MMAP_VERSION
 };

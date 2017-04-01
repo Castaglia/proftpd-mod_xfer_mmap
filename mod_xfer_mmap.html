@@ -1,6 +1,4 @@
-<!-- $Id: mod_xfer_mmap.html,v 1.1 2004/11/01 01:16:32 tj Exp tj $ -->
-<!-- $Source: /home/tj/proftpd/modules/doc/RCS/mod_xfer_mmap.html,v $ -->
-
+<!DOCTYPE html>
 <html>
 <head>
 <title>ProFTPD module mod_xfer_mmap</title>
@@ -13,9 +11,6 @@
 <h2><b>ProFTPD module <code>mod_xfer_mmap</code></b></h2>
 </center>
 <hr><br>
-
-<p>
-<b>Caveat</b>: This is an experimental module and should be used with care.
 
 <p>
 The <code>mod_xfer_mmap</code> module was designed to improve the
@@ -42,12 +37,12 @@ wasteful and against the intent of I/O reduction.
 
 <p>
 This module is contained in the <code>mod_xfer_mmap.c</code> file for
-ProFTPD 1.2.x, and is not compiled by default.  Installation instructions
+ProFTPD 1.3.x, and is not compiled by default.  Installation instructions
 are discussed <a href="#Installation">here</a>.
 <p>
 The most current version of <code>mod_xfer_mmap</code> can be found at:
 <pre>
-  <a href="http://www.castaglia.org/proftpd/">http://www.castaglia.org/proftpd/</a>
+  <a href="https://github.com/Castaglia/proftpd-mod_xfer_mmap">https://github.com/Castaglia/proftpd-mod_xfer_mmap</a>
 </pre>
 
 <h2>Author</h2>
@@ -108,9 +103,9 @@ file into:
 after unpacking the latest proftpd-1.2 source code.  Then follow the usual
 steps for using third-party modules in proftpd:
 <pre>
-  ./configure --with-modules=mod_xfer_mmap
-  make
-  make install
+  $ ./configure --with-modules=mod_xfer_mmap
+  $ make
+  $ make install
 </pre>
 
 <p>
@@ -144,20 +139,12 @@ this will happen as <code>mod_xfer_mmap</code> maps and unmaps files
 from the process' memory space.
 
 <p>
-<hr><br>
-
-Author: <i>$Author: tj $</i><br>
-Last Updated: <i>$Date: 2004/11/01 01:16:32 $</i><br>
-
-<br><hr>
-
+<hr>
 <font size=2><b><i>
-&copy; Copyright 2004 TJ Saunders<br>
+&copy; Copyright 2004-2017 TJ Saunders<br>
  All Rights Reserved<br>
 </i></b></font>
-
-<hr><br>
+<hr>
 
 </body>
 </html>
-
