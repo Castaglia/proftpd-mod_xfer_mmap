@@ -227,7 +227,7 @@ static int xfer_mmap_read_cb(pr_fh_t *fh, int fd, char *buf, size_t bufsz) {
   size_t len = bufsz;
 
   /* Ensure we don't read past the end of the mapped memory. */
-  if (curr_mmap_file.datalen + bufsz >= curr_mmap_file.st.st_size) {
+  if ((off_t) (curr_mmap_file.datalen + bufsz) >= curr_mmap_file.st.st_size) {
     len = curr_mmap_file.st.st_size - curr_mmap_file.datalen;
   }
 
