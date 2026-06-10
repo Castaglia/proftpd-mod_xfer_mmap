@@ -1,6 +1,6 @@
 /*
  * ProFTPD: mod_xfer_mmap -- a module for using mmap(2) for downloaded files
- * Copyright (c) 2003-2017 TJ Saunders
+ * Copyright (c) 2003-2026 TJ Saunders
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -29,19 +29,18 @@
 
 #include "conf.h"
 
-/* NOTE: will require 1.3.5c1 or later */
-#if PROFTPD_VERSION_NUMBER < 0x0001030501
-# error "ProFTPD 1.3.5rc1 or later required"
+#if PROFTPD_VERSION_NUMBER < 0x0001030705
+# error "ProFTPD 1.3.7 or later required"
 #endif
 
-#define MOD_XFER_MMAP_VERSION	"mod_xfer_mmap/0.3"
+#define MOD_XFER_MMAP_VERSION	"mod_xfer_mmap/0.4"
 
-#ifdef HAVE_SYS_MMAN_H
+#if defined(HAVE_SYS_MMAN_H)
 # include <sys/mman.h>
-#endif
+#endif /* HAVE_SYS_MMAN_H */
 
 /* Dummy file descriptor */
-#define XFER_MMAP_FD	10
+#define XFER_MMAP_FD	1010
 
 module xfer_mmap_module;
 
@@ -82,6 +81,8 @@ static void xfer_mmap_unmap_files(void) {
   files = (xfer_mmap_file_t *) xfer_mmap_files->elts;
 
   for (i = 0; i < xfer_mmap_files->nelts; i++) {
+    pr_signals_handle();
+
     if (munmap(files[i].data, files[i].st.st_size) < 0) {
       pr_trace_msg(trace_channel, 7, "error unmapping '%s': %s", files[i].path,
         strerror(errno));
@@ -96,9 +97,9 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
   struct stat st;
   void *data;
 
-#ifdef CYGWIN
+#if defined(CYGWIN)
   flags |= O_BINARY;
-#endif
+#endif /* CYGWIN */
 
   fd = open(path, flags, PR_OPEN_MODE);
   if (fd < 0) {
@@ -136,6 +137,9 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
     return -1;
   }
 
+  pr_trace_msg(trace_channel, 19, "mmapped %lu bytes from '%s' (fd %d)",
+    (unsigned long) st.st_size, path, fd);
+
 #if defined(MADV_SEQUENTIAL)
   /* Let the kernel know it can do more aggressive readaheads. */
   if (madvise(data, 0, MADV_SEQUENTIAL) < 0) {
@@ -152,7 +156,7 @@ static int xfer_mmap_get_file(const char *path, int *fdp) {
   curr_mmap_file.path = path;
   curr_mmap_file.data = data;
   curr_mmap_file.datalen = 0;
-  memcpy(&curr_mmap_file.st, &st, sizeof(struct stat));
+  memcpy(&(curr_mmap_file.st), &st, sizeof(struct stat));
  
   if (fdp != NULL) {
     *fdp = XFER_MMAP_FD;
@@ -173,25 +177,49 @@ static int xfer_mmap_set_file(const char *path) {
   files = (xfer_mmap_file_t *) xfer_mmap_files->elts;
 
   for (i = 0; i < xfer_mmap_files->nelts; i++) {
+    pr_signals_handle();
+
     if (strcmp(files[i].path, path) == 0) {
       curr_mmap_file.path = files[i].path;
       curr_mmap_file.data = files[i].data;
       curr_mmap_file.datalen = 0;
-      memcpy(&curr_mmap_file.st, &(files[i].st), sizeof(struct stat));
+      memcpy(&(curr_mmap_file.st), &(files[i].st), sizeof(struct stat));
 
       return 0;
     }
   }
- 
+
+  errno = ENOENT;
   return -1;
 }
 
 /* FSIO layer callbacks
  */
 
+static int xfer_mmap_fstat_cb(pr_fh_t *fh, int fd, struct stat *st) {
+  if (fd != XFER_MMAP_FD) {
+    /* XXX We should do something better here, like look up the next FSIO
+     * to handle this.
+     */
+    errno = ENOSYS;
+    return -1;
+  }
+
+  memcpy(st, &(curr_mmap_file.st), sizeof(struct stat));
+  return 0;
+}
+
 static int xfer_mmap_close_cb(pr_fh_t *fh, int fd) {
   if (xfer_mmap_premapped == FALSE) {
-    munmap(curr_mmap_file.data, curr_mmap_file.st.st_size);
+    if (munmap(curr_mmap_file.data, curr_mmap_file.st.st_size) < 0) {
+      pr_trace_msg(trace_channel, 19, "error unmapping %lu bytes from '%s': %s",
+        (unsigned long) curr_mmap_file.st.st_size, fh->fh_path,
+        strerror(errno));
+
+    } else {
+      pr_trace_msg(trace_channel, 19, "unmapped %lu bytes from '%s'",
+        (unsigned long) curr_mmap_file.st.st_size, fh->fh_path);
+    }
   }
 
   /* Reset the offset. */
@@ -213,7 +241,6 @@ static off_t xfer_mmap_lseek_cb(pr_fh_t *fh, int fd, off_t offset, int whence) {
   }
 
   curr_mmap_file.datalen = offset;
-
   return offset;
 }
 
@@ -251,6 +278,21 @@ static int xfer_mmap_open_cb(pr_fh_t *fh, const char *path, int flags) {
   }
 
   return fd;
+}
+
+static ssize_t xfer_mmap_pread_cb(pr_fh_t *fh, int fd, void *buf, size_t bufsz,
+    off_t offset) {
+  ssize_t len = bufsz;
+
+  /* Ensure we don't read past the end of the mapped memory. */
+  if ((off_t) (curr_mmap_file.datalen + bufsz) >= curr_mmap_file.st.st_size) {
+    len = curr_mmap_file.st.st_size - curr_mmap_file.datalen;
+  }
+
+  memcpy(buf, (char *) curr_mmap_file.data + curr_mmap_file.datalen, len);
+  curr_mmap_file.datalen += len;
+
+  return len;
 }
 
 static int xfer_mmap_read_cb(pr_fh_t *fh, int fd, char *buf, size_t bufsz) {
@@ -311,9 +353,11 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
     }
 
     if (xfer_mmap_get_file(path, &fd) < 0) {
-      close(fd);
+      int xerrno = errno;
+
+      (void) close(fd);
       CONF_ERROR(cmd, pstrcat(cmd->tmp_pool, ": error mapping '", path, "': ",
-        strerror(errno), NULL));
+        strerror(xerrno), NULL));
     }
 
     if (xfer_mmap_files == NULL) {
@@ -324,7 +368,7 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
     map->path = pstrdup(xfer_mmap_pool, path);
     map->data = curr_mmap_file.data;
     map->datalen = curr_mmap_file.datalen;
-    memcpy(&map->st, &curr_mmap_file.st, sizeof(struct stat));
+    memcpy(&(map->st), &(curr_mmap_file.st), sizeof(struct stat));
 
     if (xfer_mmap_fs == NULL) {
       xfer_mmap_fs = pr_register_fs(xfer_mmap_pool, "mmap", path);
@@ -333,10 +377,11 @@ MODRET set_xfermmapfile(cmd_rec *cmd) {
           strerror(errno), NULL));
       }
 
-      /* Add the custom FSIO callbacks. */
       xfer_mmap_fs->close = xfer_mmap_close_cb;
+      xfer_mmap_fs->fstat = xfer_mmap_fstat_cb;
       xfer_mmap_fs->lseek = xfer_mmap_lseek_cb;
       xfer_mmap_fs->open = xfer_mmap_open_cb;
+      xfer_mmap_fs->pread = xfer_mmap_pread_cb;
       xfer_mmap_fs->read = xfer_mmap_read_cb;
 
     } else {
@@ -371,12 +416,16 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
       "declining to mmap '%s': ASCII transfer requested", cmd->arg);
     return PR_DECLINED(cmd);
   }
- 
-  if (lstat(cmd->arg, &st) < 0) {
+
+  pr_fs_clear_cache2(cmd->arg);
+  if (pr_fsio_lstat(cmd->arg, &st) < 0) {
     pr_log_debug(DEBUG3, MOD_XFER_MMAP_VERSION ": error checking '%s': %s",
       cmd->arg, strerror(errno));
     return PR_DECLINED(cmd);
   }
+
+  pr_trace_msg(trace_channel, 19, "checking '%s': size is %lu %s", cmd->arg,
+    (unsigned long) st.st_size, st.st_size != 1 ? "bytes" : "byte");
 
   if (st.st_size == 0) {
     pr_trace_msg(trace_channel, 9, "declining to mmap '%s': Empty file",
@@ -413,10 +462,11 @@ MODRET xfer_mmap_pre_retr(cmd_rec *cmd) {
       return PR_DECLINED(cmd);
     }
 
-    /* Add the custom FSIO callbacks. */
     xfer_mmap_fs->close = xfer_mmap_close_cb;
+    xfer_mmap_fs->fstat = xfer_mmap_fstat_cb;
     xfer_mmap_fs->lseek = xfer_mmap_lseek_cb;
     xfer_mmap_fs->open = xfer_mmap_open_cb;
+    xfer_mmap_fs->pread = xfer_mmap_pread_cb;
     xfer_mmap_fs->read = xfer_mmap_read_cb;
 
   } else {
@@ -444,20 +494,22 @@ MODRET xfer_mmap_post_retr(cmd_rec *cmd) {
 
 #if defined(PR_SHARED_MODULE)
 static void xfer_mmap_mod_unload_ev(const void *event_data, void *user_data) {
-  if (strcmp("mod_xfer_mmap.c", (const char *) event_data) == 0) {
-    pr_event_unregister(&xfer_mmap_module, NULL, NULL);
+  if (strcmp("mod_xfer_mmap.c", (const char *) event_data) != 0) {
+    return;
+  }
 
-    xfer_mmap_unmap_files();
+  pr_event_unregister(&xfer_mmap_module, NULL, NULL);
 
-    if (xfer_mmap_fs != NULL) {
-      destroy_pool(xfer_mmap_fs->fs_pool);
-      xfer_mmap_fs = NULL;
-    }
+  xfer_mmap_unmap_files();
 
-    if (xfer_mmap_pool != NULL) {
-      destroy_pool(xfer_mmap_pool);
-      xfer_mmap_pool = NULL;
-    }
+  if (xfer_mmap_fs != NULL) {
+    destroy_pool(xfer_mmap_fs->fs_pool);
+    xfer_mmap_fs = NULL;
+  }
+
+  if (xfer_mmap_pool != NULL) {
+    destroy_pool(xfer_mmap_pool);
+    xfer_mmap_pool = NULL;
   }
 }
 #endif /* PR_SHARED_MODULE */
